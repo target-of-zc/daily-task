@@ -1,0 +1,15 @@
+[[permission]]
+identifier = "allow-tasks"
+description = "允许任务相关命令"
+commands.allow = [
+  "list_tasks",
+  "add_task",
+  "toggle_task",
+  "delete_task",
+  "clear_completed",
+  "get_weekly_stats",
+  "manual_backup",
+  "get_autostart",
+  "set_autostart",
+  "show_main_window",
+]

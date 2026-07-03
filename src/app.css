@@ -1,0 +1,358 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-size: 14px;
+  color: #1a1a2e;
+  background: #f4f6fb;
+  user-select: none;
+}
+
+.app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.header {
+  padding: 14px 16px;
+  background: linear-gradient(120deg, #4f6ef7, #6b8cff);
+  color: #fff;
+}
+
+.header h1 {
+  font-size: 18px;
+  margin-bottom: 10px;
+}
+
+.tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.tabs button {
+  flex: 1;
+  border: none;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+  cursor: pointer;
+}
+
+.tabs button.on {
+  background: #fff;
+  color: #4f6ef7;
+  font-weight: 600;
+}
+
+.composer {
+  padding: 12px 16px;
+  background: #fff;
+  border-bottom: 1px solid #e8ecf4;
+}
+
+.composer input[type="text"] {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #dce3f5;
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.row select,
+.row input[type="time"] {
+  padding: 6px 8px;
+  border: 1px solid #dce3f5;
+  border-radius: 6px;
+}
+
+.primary {
+  margin-left: auto;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 8px;
+  background: #4f6ef7;
+  color: #fff;
+  cursor: pointer;
+}
+
+.hint {
+  font-size: 12px;
+  color: #888;
+}
+
+.list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 16px;
+}
+
+.task {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  background: #fff;
+  border-radius: 8px;
+  margin-bottom: 6px;
+}
+
+.task label {
+  flex: 1;
+  display: flex;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.task.is-done span {
+  text-decoration: line-through;
+  color: #aaa;
+}
+
+.del {
+  border: none;
+  background: none;
+  color: #ccc;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.del:hover {
+  color: #e53935;
+}
+
+.divider {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 12px 0 6px;
+  font-size: 12px;
+  color: #888;
+}
+
+.divider button {
+  border: none;
+  background: none;
+  color: #4f6ef7;
+  cursor: pointer;
+}
+
+.empty {
+  text-align: center;
+  color: #aaa;
+  padding: 24px;
+}
+
+.footer {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 10px 16px;
+  background: #fff;
+  border-top: 1px solid #e8ecf4;
+  font-size: 13px;
+}
+
+.footer button {
+  padding: 6px 10px;
+  border: 1px solid #dce3f5;
+  border-radius: 6px;
+  background: #f8f9fc;
+  cursor: pointer;
+}
+
+.msg {
+  font-size: 12px;
+  color: #4f6ef7;
+}
+
+.msg.err {
+  color: #e53935;
+}
+
+.modal-bg {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal {
+  background: #fff;
+  padding: 20px;
+  border-radius: 12px;
+  width: 280px;
+}
+
+.modal h3 {
+  margin-bottom: 8px;
+}
+
+.modal .primary {
+  width: 100%;
+  margin-top: 12px;
+}
+
+/* 宏观日历 */
+.cal {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+}
+
+.cal-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.cal-bar button {
+  border: 1px solid #dce3f5;
+  background: #fff;
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.cal-week,
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  text-align: center;
+  gap: 4px;
+}
+
+.cal-week {
+  font-size: 11px;
+  color: #888;
+  margin-bottom: 4px;
+}
+
+.cal-cell {
+  aspect-ratio: 1;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.cal-cell.empty {
+  background: transparent;
+  cursor: default;
+}
+
+.cal-cell.on {
+  border-color: #4f6ef7;
+  background: #eef1ff;
+}
+
+.cal-cell.dot {
+  font-weight: 600;
+  color: #4f6ef7;
+}
+
+.cal-cell.is-today {
+  box-shadow: inset 0 0 0 1px #4f6ef7;
+}
+
+.cal-cell.today-dot {
+  color: #e53935;
+  font-weight: 700;
+  background: #ffebee;
+  box-shadow: inset 0 0 0 2px #e53935;
+}
+
+.cal-today {
+  margin-left: 8px;
+  padding: 4px 10px;
+  border: 1px solid #dce3f5;
+  background: #fff;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.lg-today {
+  background: #ffebee;
+  color: #e53935;
+}
+
+.cal-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 12px 0;
+}
+
+.cal-legend span,
+.cal-detail .lg-futures,
+.cal-detail .lg-employment,
+.cal-detail .lg-inflation,
+.cal-detail .lg-fed {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.lg-futures {
+  background: #e8eaf6;
+  color: #3949ab;
+}
+.lg-employment {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+.lg-inflation {
+  background: #ffebee;
+  color: #c62828;
+}
+.lg-fed {
+  background: #f3e5f5;
+  color: #6a1b9a;
+}
+
+.cal-detail {
+  background: #fff;
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.cal-detail h4 {
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.cal-detail ul {
+  list-style: none;
+}
+
+.cal-detail li {
+  padding: 8px 0;
+  border-bottom: 1px solid #f0f2f8;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cal-detail small {
+  color: #4f6ef7;
+  font-size: 11px;
+}

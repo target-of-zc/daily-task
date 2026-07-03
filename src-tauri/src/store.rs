@@ -1,9 +1,11 @@
-use chrono::{Local, NaiveDate, NaiveTime};
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
+
+use crate::time_util::{hm_str, now_str, today_naive, today_str};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
@@ -75,17 +77,22 @@ pub struct StoreData {
 
 pub struct TaskStore {
     path: PathBuf,
+    log_path: PathBuf,
     pub data: StoreData,
     pub tasks: Vec<Task>,
 }
 
-fn today_str() -> String {
-    Local::now().format("%Y-%m-%d").to_string()
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WeeklyStats {
+    pub total: u32,
+    pub done: u32,
+    pub rate: String,
+    pub by_tag: HashMap<String, u32>,
+    pub delayed: Vec<String>,
+    pub week_start: String,
+    pub week_end: String,
 }
 
-fn now_str() -> String {
-    Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
-}
 
 fn new_id() -> String {
     Uuid::new_v4().simple().to_string()[..8].to_string()
@@ -93,8 +100,11 @@ fn new_id() -> String {
 
 impl TaskStore {
     pub fn new(path: PathBuf) -> Self {
+        crate::logger::migrate_legacy_log();
+        let log_path = crate::logger::log_path();
         let mut store = Self {
             path,
+            log_path,
             data: StoreData {
                 version: 3,
                 recurring: vec![],
@@ -103,7 +113,27 @@ impl TaskStore {
             },
             tasks: vec![],
         };
-        store.load();
+        store.load(true);
+        store.prepare_today();
+        store
+    }
+
+    #[cfg(test)]
+    pub fn new_isolated(path: PathBuf) -> Self {
+        crate::logger::migrate_legacy_log();
+        let log_path = crate::logger::log_path();
+        let mut store = Self {
+            path,
+            log_path,
+            data: StoreData {
+                version: 3,
+                recurring: vec![],
+                daily: HashMap::new(),
+                meta: Meta::default(),
+            },
+            tasks: vec![],
+        };
+        store.load(false);
         store.prepare_today();
         store
     }
@@ -117,37 +147,124 @@ impl TaskStore {
         Self::data_dir().join("tasks_data.json")
     }
 
-    fn load(&mut self) {
-        if !self.path.exists() {
-            // migrate legacy path next to exe / project
-            let legacy = PathBuf::from("tasks_data.json");
-            if legacy.exists() {
-                let _ = fs::create_dir_all(self.path.parent().unwrap());
-                let _ = fs::copy(&legacy, &self.path);
+    fn legacy_data_paths() -> Vec<PathBuf> {
+        let mut paths = vec![PathBuf::from("tasks_data.json")];
+        if let Ok(cwd) = std::env::current_dir() {
+            let mut dir = Some(cwd);
+            for _ in 0..6 {
+                let Some(d) = dir else { break };
+                paths.push(d.join("tasks_data.json"));
+                paths.push(d.join("backups"));
+                dir = d.parent().map(|p| p.to_path_buf());
             }
         }
+        if let Ok(exe) = std::env::current_exe() {
+            let mut dir = exe.parent().map(|p| p.to_path_buf());
+            for _ in 0..6 {
+                let Some(d) = dir else { break };
+                paths.push(d.join("tasks_data.json"));
+                paths.push(d.join("backups"));
+                dir = d.parent().map(|p| p.to_path_buf());
+            }
+        }
+        paths
+    }
+
+    fn collect_json_candidates(seed: &PathBuf) -> Vec<PathBuf> {
+        let mut out = vec![];
+        if seed.is_file() {
+            out.push(seed.clone());
+            return out;
+        }
+        if !seed.is_dir() {
+            return out;
+        }
+        let Ok(entries) = fs::read_dir(seed) else {
+            return out;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if name == "tasks_data.json"
+                || (name.starts_with("tasks_") && name.ends_with(".json"))
+            {
+                out.push(path);
+            }
+        }
+        out
+    }
+
+    fn try_load_file(path: &std::path::Path) -> Option<StoreData> {
+        let content = fs::read_to_string(path).ok()?;
+        let mut data: StoreData = serde_json::from_str(&content).ok()?;
+        if data.version < 3 {
+            data.version = 3;
+        }
+        Some(data)
+    }
+
+    fn data_richness(data: &StoreData) -> usize {
+        let daily_count: usize = data.daily.values().map(|v| v.len()).sum();
+        data.recurring.len() + daily_count
+    }
+
+    fn load(&mut self, migrate: bool) {
+        if let Some(parent) = self.path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+
+        let mut best: Option<(StoreData, PathBuf)> = None;
+
         if self.path.exists() {
-            if let Ok(content) = fs::read_to_string(&self.path) {
-                if let Ok(mut data) = serde_json::from_str::<StoreData>(&content) {
-                    if data.version < 3 {
-                        data.version = 3;
+            if let Some(data) = Self::try_load_file(&self.path) {
+                best = Some((data, self.path.clone()));
+            }
+        }
+
+        if migrate {
+            for legacy in Self::legacy_data_paths() {
+                for candidate in Self::collect_json_candidates(&legacy) {
+                    if candidate == self.path {
+                        continue;
                     }
-                    self.data = data;
+                    if let Some(data) = Self::try_load_file(&candidate) {
+                        let score = Self::data_richness(&data);
+                        let current =
+                            best.as_ref().map(|(d, _)| Self::data_richness(d)).unwrap_or(0);
+                        if score > current {
+                            best = Some((data, candidate));
+                        }
+                    }
                 }
+            }
+        }
+
+        if let Some((data, source)) = best {
+            self.data = data;
+            if source != self.path {
+                let _ = fs::copy(&source, &self.path);
             }
         }
     }
 
-    fn save(&mut self) {
+    fn save(&mut self) -> Result<(), String> {
         let today = today_str();
         self.data.daily.insert(today.clone(), self.tasks.clone());
         self.data.meta.last_opened = Some(today);
         if let Some(parent) = self.path.parent() {
-            let _ = fs::create_dir_all(parent);
+            fs::create_dir_all(parent).map_err(|e| format!("创建数据目录失败: {e}"))?;
         }
-        if let Ok(json) = serde_json::to_string_pretty(&self.data) {
-            let _ = fs::write(&self.path, json);
-        }
+        let json =
+            serde_json::to_string_pretty(&self.data).map_err(|e| format!("序列化失败: {e}"))?;
+        fs::write(&self.path, json).map_err(|e| format!("保存失败: {e}"))?;
+        crate::backup::backup_data(&self.path);
+        Ok(())
+    }
+
+    fn log(&self, event: &str, task: &Task) {
+        crate::logger::log_event(&self.log_path, event, task);
     }
 
     fn build_new_day_tasks(&self, last_date: &str) -> Vec<Task> {
@@ -172,6 +289,7 @@ impl TaskStore {
                 reminded: false,
             };
             seen.insert(task.text.clone());
+            self.log("recurring_spawn", &task);
             new_tasks.push(task);
         }
 
@@ -183,7 +301,7 @@ impl TaskStore {
                             if t.done || t.recurring_id.is_some() || seen.contains(&t.text) {
                                 continue;
                             }
-                            new_tasks.push(Task {
+                            let carried = Task {
                                 id: new_id(),
                                 text: t.text.clone(),
                                 done: false,
@@ -196,8 +314,10 @@ impl TaskStore {
                                 priority: t.priority.clone(),
                                 remind_at: t.remind_at.clone(),
                                 reminded: false,
-                            });
+                            };
+                            self.log("carryover", &carried);
                             seen.insert(t.text.clone());
+                            new_tasks.push(carried);
                         }
                     }
                 }
@@ -228,7 +348,7 @@ impl TaskStore {
             self.data.daily.insert(today.clone(), self.tasks.clone());
         }
         self.data.meta.last_opened = Some(today);
-        self.save();
+        let _ = self.save();
     }
 
     pub fn list_tasks(&self) -> Vec<Task> {
@@ -273,16 +393,18 @@ impl TaskStore {
             reminded: false,
         };
         self.tasks.push(task.clone());
-        self.save();
+        self.log("add", &task);
+        self.save()?;
         Ok(task)
     }
 
     pub fn toggle_task(&mut self, id: &str) -> Result<Task, String> {
-        let task = self
+        let idx = self
             .tasks
-            .iter_mut()
-            .find(|t| t.id == id)
+            .iter()
+            .position(|t| t.id == id)
             .ok_or_else(|| "任务不存在".to_string())?;
+        let task = &mut self.tasks[idx];
         if task.done {
             task.done = false;
             task.completed_at = None;
@@ -291,28 +413,37 @@ impl TaskStore {
             task.done = true;
             task.completed_at = Some(now_str());
         }
-        let cloned = task.clone();
-        self.save();
+        let cloned = self.tasks[idx].clone();
+        let event = if cloned.done { "complete" } else { "uncomplete" };
+        self.log(event, &cloned);
+        self.save()?;
         Ok(cloned)
     }
 
     pub fn delete_task(&mut self, id: &str) -> Result<(), String> {
-        let len_before = self.tasks.len();
+        let task = self
+            .tasks
+            .iter()
+            .find(|t| t.id == id)
+            .cloned()
+            .ok_or_else(|| "任务不存在".to_string())?;
         self.tasks.retain(|t| t.id != id);
-        if self.tasks.len() == len_before {
-            return Err("任务不存在".into());
-        }
-        self.save();
+        self.log("delete", &task);
+        self.save()?;
         Ok(())
     }
 
     pub fn clear_completed(&mut self) {
+        let removed: Vec<Task> = self.tasks.iter().filter(|t| t.done).cloned().collect();
         self.tasks.retain(|t| !t.done);
-        self.save();
+        for task in removed {
+            self.log("clear_completed", &task);
+        }
+        let _ = self.save();
     }
 
     pub fn check_reminders(&mut self) -> Vec<Task> {
-        let hm = Local::now().format("%H:%M").to_string();
+        let hm = hm_str();
         let mut triggered = Vec::new();
         for task in &mut self.tasks {
             if task.done || task.remind_at.is_empty() || task.reminded {
@@ -324,7 +455,7 @@ impl TaskStore {
             }
         }
         if !triggered.is_empty() {
-            self.save();
+            let _ = self.save();
         }
         triggered
     }
@@ -332,11 +463,60 @@ impl TaskStore {
     pub fn save_ball_pos(&mut self, y: i32, side: &str) {
         self.data.meta.ball_y = Some(y);
         self.data.meta.dock_side = side.to_string();
-        self.save();
+        let _ = self.save();
     }
 
     pub fn ball_pos(&self) -> (Option<i32>, String) {
         (self.data.meta.ball_y, self.data.meta.dock_side.clone())
+    }
+
+    pub fn weekly_stats(&self) -> WeeklyStats {
+        let today = today_naive();
+        let week_start = today - chrono::Duration::days(6);
+        let mut total = 0u32;
+        let mut done = 0u32;
+        let mut by_tag: HashMap<String, u32> = HashMap::new();
+        let mut delayed = Vec::new();
+
+        for i in 0..7 {
+            let d = week_start + chrono::Duration::days(i);
+            let key = d.format("%Y-%m-%d").to_string();
+            if let Some(tasks) = self.data.daily.get(&key) {
+                for task in tasks {
+                    total += 1;
+                    *by_tag.entry(task.tag.clone()).or_insert(0) += 1;
+                    if task.done {
+                        done += 1;
+                    } else if d < today {
+                        delayed.push(task.text.clone());
+                    }
+                }
+            }
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        delayed.retain(|t| seen.insert(t.clone()));
+        delayed.truncate(8);
+
+        let rate = if total > 0 {
+            format!("{}%", done * 100 / total)
+        } else {
+            "—".into()
+        };
+
+        WeeklyStats {
+            total,
+            done,
+            rate,
+            by_tag,
+            delayed,
+            week_start: week_start.format("%m月%d日").to_string(),
+            week_end: today.format("%m月%d日").to_string(),
+        }
+    }
+
+    pub fn manual_backup(&self) -> Option<PathBuf> {
+        crate::backup::backup_data(&self.path)
     }
 }
 
@@ -346,13 +526,58 @@ pub fn normalize_remind_time(input: &str) -> Option<String> {
         return Some(String::new());
     }
     let parts: Vec<&str> = input.split(':').collect();
-    if parts.len() != 2 {
-        return None;
-    }
-    let h: u32 = parts[0].parse().ok()?;
-    let m: u32 = parts[1].parse().ok()?;
+    let (h_str, m_str) = match parts.len() {
+        2 | 3 => (parts[0], parts[1]),
+        _ => return None,
+    };
+    let h: u32 = h_str.parse().ok()?;
+    let m: u32 = m_str.parse().ok()?;
     if h > 23 || m > 59 {
         return None;
     }
     Some(format!("{:02}:{:02}", h, m))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_store() -> (TaskStore, PathBuf) {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("daily-task-test-{stamp}.json"));
+        let _ = fs::remove_file(&path);
+        (TaskStore::new_isolated(path.clone()), path)
+    }
+
+    #[test]
+    fn add_task_persists() {
+        let (mut store, path) = temp_store();
+        let task = store
+            .add_task(
+                "测试任务".into(),
+                false,
+                "工作".into(),
+                "高".into(),
+                "".into(),
+            )
+            .expect("add should succeed");
+        assert_eq!(task.text, "测试任务");
+        assert_eq!(store.list_tasks().len(), 1);
+
+        let reloaded = TaskStore::new_isolated(path.clone());
+        assert_eq!(reloaded.list_tasks().len(), 1);
+        assert_eq!(reloaded.list_tasks()[0].text, "测试任务");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn normalize_remind_time_accepts_seconds() {
+        assert_eq!(normalize_remind_time("09:30:00"), Some("09:30".into()));
+        assert_eq!(normalize_remind_time(""), Some("".into()));
+        assert_eq!(normalize_remind_time("25:00"), None);
+    }
 }

@@ -3,6 +3,7 @@ node_modules/
 
 # Build
 dist/
+release/
 src-tauri/target/
 
 # User data (local only)

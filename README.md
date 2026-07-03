@@ -1,24 +1,14 @@
-# 每日任务（Daily Task）
+# 每日任务 v2
 
-Windows 桌面每日任务清单 —— 基于 **Tauri 2 + React** 的悬浮球应用。
+Windows 桌面任务清单 —— Tauri 2 + React，**单窗口 + 系统托盘**，稳定可用。
 
 ## 功能
 
-- 屏幕边缘悬浮球（贴边仅露出 1/3，闲置半透明）
-- 悬停预览待办、快速勾选
-- 单击打开完整任务面板
-- 任务顺延、常驻任务、标签与优先级
-- 提醒通知、系统托盘、防多开
-- 数据本地 JSON 存储（`%LOCALAPPDATA%\DailyTask\`）
-
-## 环境要求
-
-- [Node.js](https://nodejs.org/) 18+
-- [Rust](https://www.rust-lang.org/tools/install)（含 **MSVC** 工具链，Windows）
-- [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) — 安装时勾选「使用 C++ 的桌面开发」或「C++ 生成工具」
-- [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/)（Windows 10/11 通常已预装）
-
-> 若 `cargo build` 报错 `link.exe not found`，说明尚未安装 MSVC 链接器，请先安装上述 Build Tools 后重启终端。
+- 每日任务：添加、完成、删除、常驻、标签、优先级、提醒
+- 跨日顺延、本地 JSON 存储、CSV 日志、自动备份
+- 宏观日历：ES 季末交割、非农、CPI、FOMC
+- 系统托盘：关闭窗口最小化到托盘，左键托盘图标重新打开
+- 开机自启、每周回顾、防多开
 
 ## 开发
 
@@ -33,14 +23,12 @@ npm run tauri:dev
 npm run tauri:build
 ```
 
-安装包输出在 `src-tauri/target/release/bundle/`。
+输出：`src-tauri/target/release/bundle/nsis/`
 
-## 从 Python 版迁移
+## 数据目录
 
-旧版 `tasks_data.json` 放在项目根目录时，首次启动会自动复制到应用数据目录。
+`%LOCALAPPDATA%\DailyTask\`
 
-Python 版源码保留在 `legacy/` 目录。
+## 说明
 
-## 许可证
-
-MIT
+v2 移除了不稳定的悬浮球多窗口方案，改为单主窗口。Python 旧版见 `legacy/`。
