@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+
+# Build
+dist/
+src-tauri/target/
+
+# User data (local only)
+tasks_data.json
+task_log.csv
+backups/
+legacy/tasks_data.json
+legacy/task_log.csv
+legacy/backups/
+
+# Python legacy
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+*.lnk
+
+# Env & logs
+.env
+.env.*
+*.log
+
+# Tauri
+src-tauri/gen/

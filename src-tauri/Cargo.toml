@@ -1,0 +1,24 @@
+[package]
+name = "daily-task"
+version = "1.0.0"
+description = "桌面每日任务清单"
+authors = ["you"]
+edition = "2021"
+
+[lib]
+name = "daily_task_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-notification = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+dirs = "6"
+tokio = { version = "1", features = ["time"] }
