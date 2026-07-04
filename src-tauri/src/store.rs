@@ -58,6 +58,8 @@ pub struct Meta {
     pub ball_y: Option<i32>,
     #[serde(default = "default_side")]
     pub dock_side: String,
+    #[serde(default)]
+    pub always_on_top: bool,
 }
 
 fn default_side() -> String {
@@ -79,6 +81,12 @@ pub struct TaskStore {
     path: PathBuf,
     log_path: PathBuf,
     pub data: StoreData,
+    pub tasks: Vec<Task>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduledDay {
+    pub date: String,
     pub tasks: Vec<Task>,
 }
 
@@ -326,33 +334,137 @@ impl TaskStore {
         new_tasks
     }
 
-    pub fn prepare_today(&mut self) {
+    pub fn prepare_today(&mut self) -> bool {
         let today = today_str();
         let last = self.data.meta.last_opened.clone();
 
         if last.as_deref() == Some(today.as_str()) {
             self.tasks = self.data.daily.get(&today).cloned().unwrap_or_default();
-            return;
+            return false;
         }
 
         if last.is_none() {
             if let Some(existing) = self.data.daily.get(&today).cloned() {
                 self.tasks = existing;
+                self.merge_missing_recurring();
             } else {
                 self.tasks = self.build_new_day_tasks("");
                 self.data.daily.insert(today.clone(), self.tasks.clone());
             }
         } else {
             let last_s = last.unwrap();
-            self.tasks = self.build_new_day_tasks(&last_s);
+            let preplanned = Self::collect_preplanned(&today, &self.data.daily);
+            let mut new_tasks = self.build_new_day_tasks(&last_s);
+            for t in preplanned {
+                if !new_tasks.iter().any(|x| x.id == t.id) {
+                    new_tasks.push(t);
+                }
+            }
+            self.tasks = new_tasks;
             self.data.daily.insert(today.clone(), self.tasks.clone());
         }
         self.data.meta.last_opened = Some(today);
         let _ = self.save();
+        true
+    }
+
+    /// 补全当天缺失的常驻任务（不覆盖已有项）
+    fn merge_missing_recurring(&mut self) {
+        for t in self.build_new_day_tasks("") {
+            if t.recurring_id.is_some()
+                && !self
+                    .tasks
+                    .iter()
+                    .any(|x| x.recurring_id == t.recurring_id)
+            {
+                self.tasks.push(t);
+            }
+        }
+    }
+
+    fn collect_preplanned(today: &str, daily: &HashMap<String, Vec<Task>>) -> Vec<Task> {
+        daily
+            .get(today)
+            .map(|tasks| {
+                tasks
+                    .iter()
+                    .filter(|t| Self::is_preplanned(t, today))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn is_preplanned(task: &Task, scheduled: &str) -> bool {
+        if task.created_date != scheduled {
+            return false;
+        }
+        let added = task.created_at.split(' ').next().unwrap_or("");
+        added < scheduled
+    }
+
+    fn parse_target_date(input: &str) -> Result<String, String> {
+        let input = input.trim();
+        let date = if input.is_empty() {
+            today_str()
+        } else {
+            NaiveDate::parse_from_str(input, "%Y-%m-%d")
+                .map_err(|_| "日期格式无效，请使用 YYYY-MM-DD".to_string())?
+                .format("%Y-%m-%d")
+                .to_string()
+        };
+        let today = today_str();
+        if date < today {
+            return Err("不能添加到过去的日期".to_string());
+        }
+        Ok(date)
+    }
+
+    fn locate_task(&self, id: &str) -> Result<(String, usize), String> {
+        let today = today_str();
+        if let Some(idx) = self.tasks.iter().position(|t| t.id == id) {
+            return Ok((today, idx));
+        }
+        let mut dates: Vec<_> = self.data.daily.keys().cloned().collect();
+        dates.sort();
+        for date in dates {
+            if date == today {
+                continue;
+            }
+            if let Some(tasks) = self.data.daily.get(&date) {
+                if let Some(idx) = tasks.iter().position(|t| t.id == id) {
+                    return Ok((date, idx));
+                }
+            }
+        }
+        Err("任务不存在".to_string())
     }
 
     pub fn list_tasks(&self) -> Vec<Task> {
         self.tasks.clone()
+    }
+
+    pub fn list_scheduled_days(&self) -> Vec<ScheduledDay> {
+        let today = today_str();
+        let mut dates: Vec<_> = self
+            .data
+            .daily
+            .keys()
+            .filter(|d| d.as_str() > today.as_str())
+            .cloned()
+            .collect();
+        dates.sort();
+        dates
+            .into_iter()
+            .filter_map(|date| {
+                let tasks = self.data.daily.get(&date)?.clone();
+                if tasks.is_empty() {
+                    None
+                } else {
+                    Some(ScheduledDay { date, tasks })
+                }
+            })
+            .collect()
     }
 
     pub fn add_task(
@@ -362,9 +474,14 @@ impl TaskStore {
         tag: String,
         priority: String,
         remind_at: String,
+        target_date: String,
     ) -> Result<Task, String> {
         let today = today_str();
+        let target = Self::parse_target_date(&target_date)?;
         let now = now_str();
+        if recurring && target != today {
+            return Err("常驻任务只能添加到今天".to_string());
+        }
         let mut recurring_id = None;
         if recurring {
             let rid = new_id();
@@ -383,7 +500,7 @@ impl TaskStore {
             text,
             done: false,
             recurring_id,
-            created_date: today,
+            created_date: target.clone(),
             created_at: now,
             completed_at: None,
             carried_from: None,
@@ -392,42 +509,66 @@ impl TaskStore {
             remind_at,
             reminded: false,
         };
-        self.tasks.push(task.clone());
+        if target == today {
+            self.tasks.push(task.clone());
+        } else {
+            self.data
+                .daily
+                .entry(target)
+                .or_default()
+                .push(task.clone());
+        }
         self.log("add", &task);
         self.save()?;
         Ok(task)
     }
 
     pub fn toggle_task(&mut self, id: &str) -> Result<Task, String> {
-        let idx = self
-            .tasks
-            .iter()
-            .position(|t| t.id == id)
-            .ok_or_else(|| "任务不存在".to_string())?;
-        let task = &mut self.tasks[idx];
-        if task.done {
-            task.done = false;
-            task.completed_at = None;
-            task.reminded = false;
+        let today = today_str();
+        let (date, idx) = self.locate_task(id)?;
+        let task = if date == today {
+            let task = &mut self.tasks[idx];
+            if task.done {
+                task.done = false;
+                task.completed_at = None;
+                task.reminded = false;
+            } else {
+                task.done = true;
+                task.completed_at = Some(now_str());
+            }
+            self.tasks[idx].clone()
         } else {
-            task.done = true;
-            task.completed_at = Some(now_str());
-        }
-        let cloned = self.tasks[idx].clone();
-        let event = if cloned.done { "complete" } else { "uncomplete" };
-        self.log(event, &cloned);
+            let tasks = self.data.daily.get_mut(&date).ok_or("任务不存在")?;
+            let task = &mut tasks[idx];
+            if task.done {
+                task.done = false;
+                task.completed_at = None;
+                task.reminded = false;
+            } else {
+                task.done = true;
+                task.completed_at = Some(now_str());
+            }
+            tasks[idx].clone()
+        };
+        let event = if task.done { "complete" } else { "uncomplete" };
+        self.log(event, &task);
         self.save()?;
-        Ok(cloned)
+        Ok(task)
     }
 
     pub fn delete_task(&mut self, id: &str) -> Result<(), String> {
-        let task = self
-            .tasks
-            .iter()
-            .find(|t| t.id == id)
-            .cloned()
-            .ok_or_else(|| "任务不存在".to_string())?;
-        self.tasks.retain(|t| t.id != id);
+        let today = today_str();
+        let (date, idx) = self.locate_task(id)?;
+        let task = if date == today {
+            let task = self.tasks[idx].clone();
+            self.tasks.retain(|t| t.id != id);
+            task
+        } else {
+            let tasks = self.data.daily.get_mut(&date).ok_or("任务不存在")?;
+            let task = tasks[idx].clone();
+            tasks.remove(idx);
+            task
+        };
         self.log("delete", &task);
         self.save()?;
         Ok(())
@@ -515,6 +656,15 @@ impl TaskStore {
         }
     }
 
+    pub fn always_on_top(&self) -> bool {
+        self.data.meta.always_on_top
+    }
+
+    pub fn set_always_on_top(&mut self, enabled: bool) -> Result<(), String> {
+        self.data.meta.always_on_top = enabled;
+        self.save()
+    }
+
     pub fn manual_backup(&self) -> Option<PathBuf> {
         crate::backup::backup_data(&self.path)
     }
@@ -562,6 +712,7 @@ mod tests {
                 false,
                 "工作".into(),
                 "高".into(),
+                "".into(),
                 "".into(),
             )
             .expect("add should succeed");

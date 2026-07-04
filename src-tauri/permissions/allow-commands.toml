@@ -3,6 +3,7 @@ identifier = "allow-tasks"
 description = "允许任务相关命令"
 commands.allow = [
   "list_tasks",
+  "list_scheduled_days",
   "add_task",
   "toggle_task",
   "delete_task",
@@ -12,4 +13,7 @@ commands.allow = [
   "get_autostart",
   "set_autostart",
   "show_main_window",
+  "quit_app",
+  "get_always_on_top",
+  "set_always_on_top",
 ]

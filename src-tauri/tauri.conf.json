@@ -17,7 +17,6 @@
         "title": "每日任务",
         "width": 400,
         "height": 640,
-        "center": true,
         "resizable": true,
         "decorations": true
       }

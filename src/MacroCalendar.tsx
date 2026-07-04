@@ -21,7 +21,7 @@ export default function MacroCalendar() {
   const byDay = useMemo(() => {
     const m = new Map<number, typeof events>();
     for (const e of events) {
-      const d = +e.date.split("-")[2];
+      const d = +e.beijingDate.split("-")[2];
       if (!m.has(d)) m.set(d, []);
       m.get(d)!.push(e);
     }
@@ -84,15 +84,19 @@ export default function MacroCalendar() {
               className={[
                 "cal-cell",
                 day === d ? "on" : "",
-                byDay.has(d) ? "dot" : "",
-                isCstToday(year, month, d) && byDay.has(d) ? "today-dot" : "",
+                byDay.has(d) ? "has-event" : "",
+                isCstToday(year, month, d) && byDay.has(d) ? "today-event" : "",
                 isCstToday(year, month, d) ? "is-today" : "",
               ]
                 .filter(Boolean)
                 .join(" ")}
               onClick={() => setDay(d)}
             >
-              {d}
+              <span className="cal-day-num">{d}</span>
+              <span
+                className={`cal-event-dot${byDay.has(d) ? " show" : ""}`}
+                aria-hidden
+              />
             </button>
           )
         )}
@@ -117,7 +121,9 @@ export default function MacroCalendar() {
               <li key={e.id}>
                 <span className={`lg-${e.category}`}>{CATEGORY_LABELS[e.category]}</span>
                 <b>{e.name}</b>
+                {e.refMonth && <span className="cal-ref">数据：{e.refMonth}</span>}
                 <small>{formatEventTime(e)}</small>
+                {e.note && <small className="cal-note">{e.note}</small>}
               </li>
             ))}
           </ul>

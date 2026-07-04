@@ -4,6 +4,7 @@ mod commands;
 mod logger;
 mod store;
 mod time_util;
+mod window_layout;
 
 use std::sync::Mutex;
 
@@ -19,13 +20,14 @@ pub struct AppState {
 }
 
 fn setup_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    let open_i = MenuItem::with_id(app, "open", "打开", true, None::<&str>)?;
-    let quit_i = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    let open_i = MenuItem::with_id(app, "open", "打开主界面", true, None::<&str>)?;
+    let quit_i = MenuItem::with_id(app, "quit", "退出程序", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open_i, &quit_i])?;
 
     TrayIconBuilder::new()
         .menu(&menu)
-        .tooltip("每日任务")
+        .show_menu_on_left_click(false)
+        .tooltip("每日任务 · 左键显示/隐藏 · 右键菜单")
         .on_menu_event(|app, e| match e.id.as_ref() {
             "open" => commands::show_main(app),
             "quit" => app.exit(0),
@@ -38,7 +40,7 @@ fn setup_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> 
                 ..
             } = e
             {
-                commands::show_main(tray.app_handle());
+                commands::toggle_main(tray.app_handle());
             }
         })
         .build(app)?;
@@ -49,6 +51,7 @@ fn setup_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let store = TaskStore::new(TaskStore::default_path());
+    let always_on_top = store.always_on_top();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
@@ -60,6 +63,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_tasks,
+            commands::list_scheduled_days,
             commands::add_task,
             commands::toggle_task,
             commands::delete_task,
@@ -69,11 +73,17 @@ pub fn run() {
             commands::get_autostart,
             commands::set_autostart,
             commands::show_main_window,
+            commands::quit_app,
+            commands::get_always_on_top,
+            commands::set_always_on_top,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             setup_tray(app.handle())?;
             commands::spawn_reminder_loop(app.handle().clone());
+            commands::spawn_day_rollover_loop(app.handle().clone());
             if let Some(win) = app.get_webview_window("main") {
+                let _ = window_layout::dock_main_window(&win);
+                let _ = win.set_always_on_top(always_on_top);
                 let _ = win.show();
             }
             Ok(())
@@ -89,9 +99,7 @@ pub fn run() {
             {
                 if label == "main" {
                     api.prevent_close();
-                    if let Some(w) = app.get_webview_window("main") {
-                        let _ = w.hide();
-                    }
+                    commands::hide_main(app);
                 }
             }
         });

@@ -3,10 +3,18 @@ export interface Task {
   text: string;
   done: boolean;
   recurring_id?: string | null;
+  created_date: string;
+  created_at: string;
+  completed_at?: string | null;
+  carried_from?: string | null;
   tag: string;
   priority: string;
   remind_at: string;
-  carried_from?: string | null;
+}
+
+export interface ScheduledDay {
+  date: string;
+  tasks: Task[];
 }
 
 export const TAGS = ["工作", "学习", "生活", "其他"] as const;
