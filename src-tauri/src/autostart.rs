@@ -65,7 +65,7 @@ pub fn set_autostart(enable: bool) -> Result<(), String> {
             remove_entry(&key, name)?;
         }
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        let value = format!("\"{}\"", exe.display());
+        let value = format!("\"{}\" --minimized", exe.display());
         key.set_value(AUTOSTART_NAME, &value)
             .map_err(|e| format!("写入自启失败: {e}"))?;
     } else {

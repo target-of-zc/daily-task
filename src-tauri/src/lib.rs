@@ -1,3 +1,5 @@
+pub mod email;
+pub mod email_config;
 mod autostart;
 mod backup;
 mod commands;
@@ -50,6 +52,7 @@ fn setup_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> 
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let start_minimized = std::env::args().any(|a| a == "--minimized" || a == "--tray");
     let store = TaskStore::new(TaskStore::default_path());
     let always_on_top = store.always_on_top();
 
@@ -67,24 +70,50 @@ pub fn run() {
             commands::add_task,
             commands::toggle_task,
             commands::delete_task,
+            commands::stop_recurring,
+            commands::update_task,
+            commands::reorder_tasks,
+            commands::snooze_task,
+            commands::sync_macro_reminders,
+            commands::get_macro_alarm_enabled,
+            commands::set_macro_alarm_enabled,
+            commands::get_task_counts_by_date,
+            commands::get_dark_theme,
+            commands::set_dark_theme,
+            commands::export_week_csv,
+            commands::list_backups,
+            commands::restore_backup,
             commands::clear_completed,
             commands::get_weekly_stats,
             commands::manual_backup,
             commands::get_autostart,
             commands::set_autostart,
             commands::show_main_window,
+            commands::hide_main_window,
+            commands::minimize_main_window,
+            commands::set_ball_peek,
+            commands::move_ball_by_delta,
             commands::quit_app,
             commands::get_always_on_top,
             commands::set_always_on_top,
+            commands::get_email_settings,
+            commands::set_email_settings,
+            commands::test_email_settings,
         ])
         .setup(move |app| {
             setup_tray(app.handle())?;
             commands::spawn_reminder_loop(app.handle().clone());
             commands::spawn_day_rollover_loop(app.handle().clone());
             if let Some(win) = app.get_webview_window("main") {
+                let _ = win.set_skip_taskbar(true);
+                let _ = win.set_background_color(Some(tauri::window::Color(238, 241, 248, 255)));
                 let _ = window_layout::dock_main_window(&win);
                 let _ = win.set_always_on_top(always_on_top);
-                let _ = win.show();
+                if start_minimized {
+                    let _ = win.hide();
+                } else {
+                    let _ = win.show();
+                }
             }
             Ok(())
         })

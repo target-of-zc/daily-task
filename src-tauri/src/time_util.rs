@@ -24,6 +24,12 @@ pub fn hm_str() -> String {
     now_cst().format("%H:%M").to_string()
 }
 
+pub fn hm_add_minutes(minutes: i32) -> String {
+    (now_cst() + chrono::Duration::minutes(minutes as i64))
+        .format("%H:%M")
+        .to_string()
+}
+
 /// 距离下一个东八区 00:00 的秒数（至少 1 秒）
 pub fn secs_until_next_cst_midnight() -> u64 {
     let now = now_cst();

@@ -20,21 +20,16 @@ pub struct Task {
     pub completed_at: Option<String>,
     #[serde(default)]
     pub carried_from: Option<String>,
-    #[serde(default = "default_tag")]
+    #[serde(default)]
     pub tag: String,
-    #[serde(default = "default_priority")]
+    #[serde(default)]
     pub priority: String,
     #[serde(default)]
     pub remind_at: String,
     #[serde(default)]
     pub reminded: bool,
-}
-
-fn default_tag() -> String {
-    "其他".into()
-}
-fn default_priority() -> String {
-    "中".into()
+    #[serde(default)]
+    pub email_due_sent: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,9 +37,9 @@ pub struct RecurringTemplate {
     pub id: String,
     pub text: String,
     pub created: String,
-    #[serde(default = "default_tag")]
+    #[serde(default)]
     pub tag: String,
-    #[serde(default = "default_priority")]
+    #[serde(default)]
     pub priority: String,
     #[serde(default)]
     pub remind_at: String,
@@ -60,6 +55,31 @@ pub struct Meta {
     pub dock_side: String,
     #[serde(default)]
     pub always_on_top: bool,
+    #[serde(default)]
+    pub dark_theme: bool,
+    #[serde(default)]
+    pub last_evening_summary: Option<String>,
+    #[serde(default = "default_true")]
+    pub macro_alarm_enabled: bool,
+    #[serde(default)]
+    pub macro_reminder_date: Option<String>,
+    #[serde(default)]
+    pub macro_reminders: Vec<MacroReminderSlot>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MacroReminderSlot {
+    pub id: String,
+    pub name: String,
+    pub alert_at: String,
+    pub event_at: String,
+    #[serde(default)]
+    pub fired: bool,
 }
 
 fn default_side() -> String {
@@ -95,7 +115,6 @@ pub struct WeeklyStats {
     pub total: u32,
     pub done: u32,
     pub rate: String,
-    pub by_tag: HashMap<String, u32>,
     pub delayed: Vec<String>,
     pub week_start: String,
     pub week_end: String,
@@ -295,6 +314,7 @@ impl TaskStore {
                 priority: item.priority.clone(),
                 remind_at: item.remind_at.clone(),
                 reminded: false,
+                email_due_sent: false,
             };
             seen.insert(task.text.clone());
             self.log("recurring_spawn", &task);
@@ -322,6 +342,7 @@ impl TaskStore {
                                 priority: t.priority.clone(),
                                 remind_at: t.remind_at.clone(),
                                 reminded: false,
+                                email_due_sent: false,
                             };
                             self.log("carryover", &carried);
                             seen.insert(t.text.clone());
@@ -471,8 +492,6 @@ impl TaskStore {
         &mut self,
         text: String,
         recurring: bool,
-        tag: String,
-        priority: String,
         remind_at: String,
         target_date: String,
     ) -> Result<Task, String> {
@@ -489,8 +508,8 @@ impl TaskStore {
                 id: rid.clone(),
                 text: text.clone(),
                 created: today.clone(),
-                tag: tag.clone(),
-                priority: priority.clone(),
+                tag: String::new(),
+                priority: String::new(),
                 remind_at: remind_at.clone(),
             });
             recurring_id = Some(rid);
@@ -504,10 +523,11 @@ impl TaskStore {
             created_at: now,
             completed_at: None,
             carried_from: None,
-            tag,
-            priority,
+            tag: String::new(),
+            priority: String::new(),
             remind_at,
             reminded: false,
+            email_due_sent: false,
         };
         if target == today {
             self.tasks.push(task.clone());
@@ -574,6 +594,35 @@ impl TaskStore {
         Ok(())
     }
 
+    /// 停止常驻：移除模板并删除当前任务（以后不再自动添加）
+    pub fn stop_recurring(&mut self, id: &str) -> Result<(), String> {
+        let today = today_str();
+        let (date, idx) = self.locate_task(id)?;
+        let task = if date == today {
+            self.tasks[idx].clone()
+        } else {
+            self.data
+                .daily
+                .get(&date)
+                .and_then(|tasks| tasks.get(idx))
+                .cloned()
+                .ok_or_else(|| "任务不存在".to_string())?
+        };
+        let rid = task
+            .recurring_id
+            .as_ref()
+            .ok_or_else(|| "非常驻任务".to_string())?;
+        self.data.recurring.retain(|r| r.id != *rid);
+        if date == today {
+            self.tasks.retain(|t| t.id != id);
+        } else if let Some(tasks) = self.data.daily.get_mut(&date) {
+            tasks.remove(idx);
+        }
+        self.log("stop_recurring", &task);
+        self.save()?;
+        Ok(())
+    }
+
     pub fn clear_completed(&mut self) {
         let removed: Vec<Task> = self.tasks.iter().filter(|t| t.done).cloned().collect();
         self.tasks.retain(|t| !t.done);
@@ -581,6 +630,158 @@ impl TaskStore {
             self.log("clear_completed", &task);
         }
         let _ = self.save();
+    }
+
+    pub fn update_task(
+        &mut self,
+        id: &str,
+        text: String,
+        target_date: String,
+        remind_at: String,
+    ) -> Result<Task, String> {
+        let remind =
+            normalize_remind_time(&remind_at).ok_or_else(|| "提醒时间格式无效".to_string())?;
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            return Err("标题不能为空".to_string());
+        }
+        let today = today_str();
+        let new_target = Self::parse_target_date(&target_date)?;
+        let (old_date, idx) = self.locate_task(id)?;
+
+        if old_date != today && new_target == today {
+            // future -> today: ok
+        } else if old_date == today && new_target != today {
+            let task_ref = &self.tasks[idx];
+            if task_ref.recurring_id.is_some() {
+                return Err("常驻任务不能改到其他日期".to_string());
+            }
+        } else if old_date != today {
+            // future -> future: ok
+        } else {
+            let task_ref = &self.tasks[idx];
+            if task_ref.recurring_id.is_some() && new_target != today {
+                return Err("常驻任务不能改到其他日期".to_string());
+            }
+        }
+
+        let mut task = if old_date == today {
+            self.tasks.remove(idx)
+        } else {
+            let tasks = self.data.daily.get_mut(&old_date).ok_or("任务不存在")?;
+            tasks.remove(idx)
+        };
+
+        let remind_changed = task.remind_at != remind;
+        task.text = text;
+        task.remind_at = remind;
+        task.created_date = new_target.clone();
+        if remind_changed {
+            task.reminded = false;
+            task.email_due_sent = false;
+        }
+
+        if new_target == today {
+            self.tasks.push(task.clone());
+        } else {
+            self.data
+                .daily
+                .entry(new_target)
+                .or_default()
+                .push(task.clone());
+        }
+        self.log("update", &task);
+        self.save()?;
+        Ok(task)
+    }
+
+    pub fn task_counts_by_date(&self) -> HashMap<String, u32> {
+        let today = today_str();
+        let mut counts = HashMap::new();
+        let today_pending = self.tasks.iter().filter(|t| !t.done).count() as u32;
+        if today_pending > 0 {
+            counts.insert(today.clone(), today_pending);
+        }
+        for (date, tasks) in &self.data.daily {
+            if date.as_str() <= today.as_str() {
+                continue;
+            }
+            let n = tasks.iter().filter(|t| !t.done).count() as u32;
+            if n > 0 {
+                counts.insert(date.clone(), n);
+            }
+        }
+        counts
+    }
+
+    pub fn check_evening_summary(&mut self) -> Option<Vec<Task>> {
+        let today = today_str();
+        if hm_str() != "21:00" {
+            return None;
+        }
+        if self.data.meta.last_evening_summary.as_deref() == Some(today.as_str()) {
+            return None;
+        }
+        self.data.meta.last_evening_summary = Some(today.clone());
+        let pending: Vec<Task> = self.tasks.iter().filter(|t| !t.done).cloned().collect();
+        let _ = self.save();
+        if pending.is_empty() {
+            return None;
+        }
+        Some(pending)
+    }
+
+    pub fn dark_theme(&self) -> bool {
+        self.data.meta.dark_theme
+    }
+
+    pub fn set_dark_theme(&mut self, enabled: bool) -> Result<(), String> {
+        self.data.meta.dark_theme = enabled;
+        self.save()
+    }
+
+    pub fn export_week_csv(&self) -> Result<PathBuf, String> {
+        let today = today_naive();
+        let week_start = today - chrono::Duration::days(6);
+        let today_key = today_str();
+        let dir = Self::data_dir();
+        let path = dir.join(format!(
+            "week_export_{}.csv",
+            today.format("%Y%m%d")
+        ));
+
+        let mut lines = vec!["日期,任务,状态,提醒时间,创建时间".to_string()];
+        for i in 0..7 {
+            let d = week_start + chrono::Duration::days(i);
+            let key = d.format("%Y-%m-%d").to_string();
+            if key == today_key {
+                for t in &self.tasks {
+                    lines.push(csv_task_row(&key, t));
+                }
+            } else if let Some(tasks) = self.data.daily.get(&key) {
+                for t in tasks {
+                    lines.push(csv_task_row(&key, t));
+                }
+            }
+        }
+        fs::write(&path, lines.join("\n")).map_err(|e| format!("写入失败: {e}"))?;
+        Ok(path)
+    }
+
+    pub fn restore_from_backup(&mut self, filename: &str) -> Result<(), String> {
+        if !filename.starts_with("tasks_") || !filename.ends_with(".json") {
+            return Err("无效的备份文件".to_string());
+        }
+        let src = crate::backup::backup_dir().join(filename);
+        if !src.is_file() {
+            return Err("备份不存在".to_string());
+        }
+        let _ = crate::backup::backup_data(&self.path);
+        fs::copy(&src, &self.path).map_err(|e| format!("恢复失败: {e}"))?;
+        let reloaded = Self::new(self.path.clone());
+        self.data = reloaded.data;
+        self.tasks = reloaded.tasks;
+        Ok(())
     }
 
     pub fn check_reminders(&mut self) -> Vec<Task> {
@@ -592,8 +793,29 @@ impl TaskStore {
             }
             if task.remind_at == hm {
                 task.reminded = true;
+                task.email_due_sent = true;
                 triggered.push(task.clone());
             }
+        }
+        if !triggered.is_empty() {
+            let _ = self.save();
+        }
+        triggered
+    }
+
+    /// 到期且未完成的预先计划任务（无单独提醒时间，到日发邮件一次）
+    pub fn check_due_planned_emails(&mut self) -> Vec<Task> {
+        let today = today_str();
+        let mut triggered = Vec::new();
+        for task in &mut self.tasks {
+            if task.done || task.email_due_sent || !task.remind_at.is_empty() {
+                continue;
+            }
+            if !Self::is_preplanned(task, &today) {
+                continue;
+            }
+            task.email_due_sent = true;
+            triggered.push(task.clone());
         }
         if !triggered.is_empty() {
             let _ = self.save();
@@ -616,7 +838,6 @@ impl TaskStore {
         let week_start = today - chrono::Duration::days(6);
         let mut total = 0u32;
         let mut done = 0u32;
-        let mut by_tag: HashMap<String, u32> = HashMap::new();
         let mut delayed = Vec::new();
 
         for i in 0..7 {
@@ -625,7 +846,6 @@ impl TaskStore {
             if let Some(tasks) = self.data.daily.get(&key) {
                 for task in tasks {
                     total += 1;
-                    *by_tag.entry(task.tag.clone()).or_insert(0) += 1;
                     if task.done {
                         done += 1;
                     } else if d < today {
@@ -649,7 +869,6 @@ impl TaskStore {
             total,
             done,
             rate,
-            by_tag,
             delayed,
             week_start: week_start.format("%m月%d日").to_string(),
             week_end: today.format("%m月%d日").to_string(),
@@ -665,9 +884,130 @@ impl TaskStore {
         self.save()
     }
 
+    pub fn reorder_tasks(&mut self, ordered_ids: Vec<String>) -> Result<(), String> {
+        let mut by_id: HashMap<String, Task> =
+            self.tasks.iter().map(|t| (t.id.clone(), t.clone())).collect();
+        let mut new_tasks = Vec::with_capacity(self.tasks.len());
+        for id in &ordered_ids {
+            if let Some(t) = by_id.remove(id) {
+                new_tasks.push(t);
+            }
+        }
+        for t in &self.tasks {
+            if by_id.contains_key(&t.id) {
+                new_tasks.push(by_id.remove(&t.id).unwrap());
+            }
+        }
+        self.tasks = new_tasks;
+        self.save()
+    }
+
+    pub fn snooze_task(&mut self, id: &str, minutes: u32) -> Result<Task, String> {
+        let today = today_str();
+        let (date, idx) = self.locate_task(id)?;
+        let task = if date == today {
+            &mut self.tasks[idx]
+        } else {
+            self.data
+                .daily
+                .get_mut(&date)
+                .ok_or("任务不存在")?
+                .get_mut(idx)
+                .ok_or_else(|| "任务不存在".to_string())?
+        };
+        task.reminded = false;
+        task.email_due_sent = false;
+        task.remind_at = crate::time_util::hm_add_minutes(minutes as i32);
+        let updated = task.clone();
+        self.log("snooze", &updated);
+        self.save()?;
+        Ok(updated)
+    }
+
+    pub fn macro_alarm_enabled(&self) -> bool {
+        self.data.meta.macro_alarm_enabled
+    }
+
+    pub fn set_macro_alarm_enabled(&mut self, enabled: bool) -> Result<(), String> {
+        self.data.meta.macro_alarm_enabled = enabled;
+        self.save()
+    }
+
+    pub fn sync_macro_reminders(
+        &mut self,
+        date: String,
+        slots: Vec<MacroReminderSlot>,
+    ) -> Result<(), String> {
+        if self.data.meta.macro_reminder_date.as_deref() != Some(date.as_str()) {
+            self.data.meta.macro_reminder_date = Some(date);
+            self.data.meta.macro_reminders = slots;
+        } else {
+            let fired: HashMap<String, bool> = self
+                .data
+                .meta
+                .macro_reminders
+                .iter()
+                .map(|s| (s.id.clone(), s.fired))
+                .collect();
+            self.data.meta.macro_reminders = slots
+                .into_iter()
+                .map(|mut s| {
+                    if fired.get(&s.id).copied().unwrap_or(false) {
+                        s.fired = true;
+                    }
+                    s
+                })
+                .collect();
+        }
+        self.save()
+    }
+
+    pub fn check_macro_reminders(&mut self) -> Vec<MacroReminderSlot> {
+        if !self.data.meta.macro_alarm_enabled {
+            return Vec::new();
+        }
+        let today = today_str();
+        if self.data.meta.macro_reminder_date.as_deref() != Some(today.as_str()) {
+            return Vec::new();
+        }
+        let hm = hm_str();
+        let mut triggered = Vec::new();
+        for slot in &mut self.data.meta.macro_reminders {
+            if slot.fired || slot.alert_at != hm {
+                continue;
+            }
+            slot.fired = true;
+            triggered.push(slot.clone());
+        }
+        if !triggered.is_empty() {
+            let _ = self.save();
+        }
+        triggered
+    }
+
     pub fn manual_backup(&self) -> Option<PathBuf> {
         crate::backup::backup_data(&self.path)
     }
+}
+
+fn csv_escape(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+fn csv_task_row(date: &str, t: &Task) -> String {
+    let status = if t.done { "已完成" } else { "待办" };
+    format!(
+        "{},{},{},{},{}",
+        date,
+        csv_escape(&t.text),
+        status,
+        csv_escape(&t.remind_at),
+        csv_escape(&t.created_at),
+    )
 }
 
 pub fn normalize_remind_time(input: &str) -> Option<String> {
@@ -710,8 +1050,6 @@ mod tests {
             .add_task(
                 "测试任务".into(),
                 false,
-                "工作".into(),
-                "高".into(),
                 "".into(),
                 "".into(),
             )
@@ -730,5 +1068,113 @@ mod tests {
         assert_eq!(normalize_remind_time("09:30:00"), Some("09:30".into()));
         assert_eq!(normalize_remind_time(""), Some("".into()));
         assert_eq!(normalize_remind_time("25:00"), None);
+    }
+
+    #[test]
+    fn toggle_and_delete_task() {
+        let (mut store, path) = temp_store();
+        let task = store
+            .add_task("待办".into(), false, "09:00".into(), "".into())
+            .unwrap();
+        let id = task.id.clone();
+
+        let done = store.toggle_task(&id).unwrap();
+        assert!(done.done);
+        assert!(done.completed_at.is_some());
+
+        store.toggle_task(&id).unwrap();
+        assert!(!store.list_tasks()[0].done);
+
+        store.delete_task(&id).unwrap();
+        assert!(store.list_tasks().is_empty());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn reorder_tasks_keeps_done_at_end() {
+        let (mut store, path) = temp_store();
+        let a = store.add_task("A".into(), false, "".into(), "".into()).unwrap();
+        let b = store.add_task("B".into(), false, "".into(), "".into()).unwrap();
+        let c = store.add_task("C".into(), false, "".into(), "".into()).unwrap();
+        store.toggle_task(&b.id).unwrap();
+
+        store
+            .reorder_tasks(vec![c.id.clone(), a.id.clone()])
+            .unwrap();
+
+        let ids: Vec<_> = store.list_tasks().iter().map(|t| t.id.clone()).collect();
+        assert_eq!(ids, vec![c.id, a.id, b.id]);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn snooze_task_updates_remind_at() {
+        let (mut store, path) = temp_store();
+        let task = store
+            .add_task("提醒".into(), false, "08:00".into(), "".into())
+            .unwrap();
+        store.toggle_task(&task.id).unwrap(); // mark reminded path
+        let updated = store.snooze_task(&task.id, 10).unwrap();
+        assert!(!updated.remind_at.is_empty());
+        assert!(!updated.reminded);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn sync_macro_reminders_preserves_fired() {
+        let (mut store, path) = temp_store();
+        let slots = vec![MacroReminderSlot {
+            id: "nfp".into(),
+            name: "非农".into(),
+            alert_at: "20:25".into(),
+            event_at: "20:30".into(),
+            fired: false,
+        }];
+        store
+            .sync_macro_reminders("2026-07-04".into(), slots)
+            .unwrap();
+        store.data.meta.macro_reminders[0].fired = true;
+
+        let resync = vec![MacroReminderSlot {
+            id: "nfp".into(),
+            name: "非农".into(),
+            alert_at: "20:25".into(),
+            event_at: "20:30".into(),
+            fired: false,
+        }];
+        store.sync_macro_reminders("2026-07-04".into(), resync).unwrap();
+        assert!(store.data.meta.macro_reminders[0].fired);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn future_task_and_move_to_today() {
+        let (mut store, path) = temp_store();
+        let tomorrow = (today_naive() + chrono::Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+        let task = store
+            .add_task("计划".into(), false, "10:00".into(), tomorrow.clone())
+            .unwrap();
+        assert!(store.list_tasks().is_empty());
+        assert_eq!(store.list_scheduled_days().len(), 1);
+
+        let updated = store
+            .update_task(&task.id, "计划".into(), "".into(), "11:00".into())
+            .unwrap();
+        assert_eq!(updated.created_date, today_str());
+        assert_eq!(store.list_tasks().len(), 1);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn dark_theme_and_always_on_top_persist() {
+        let (mut store, path) = temp_store();
+        store.set_dark_theme(true).unwrap();
+        store.set_always_on_top(true).unwrap();
+        let reloaded = TaskStore::new_isolated(path.clone());
+        assert!(reloaded.dark_theme());
+        assert!(reloaded.always_on_top());
+        let _ = fs::remove_file(path);
     }
 }

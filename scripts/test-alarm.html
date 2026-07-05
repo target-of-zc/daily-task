@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>宏观警报测试</title>
+  <style>
+    body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; padding: 40px; text-align: center; }
+    button { font-size: 18px; padding: 12px 24px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <h2>宏观提醒警报测试</h2>
+  <p id="status">点击下方按钮播放 10 秒双音警报</p>
+  <button id="play">▶ 播放警报</button>
+  <script>
+    function beep(ctx, freq, start, dur) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "square";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.35, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + dur);
+    }
+    document.getElementById("play").onclick = () => {
+      document.getElementById("status").textContent = "播放中…（约 10 秒）";
+      const ctx = new AudioContext();
+      let t = ctx.currentTime;
+      const interval = 0.45;
+      const end = t + 10;
+      while (t < end) {
+        beep(ctx, 880, t, 0.18);
+        beep(ctx, 660, t + 0.22, 0.18);
+        t += interval;
+      }
+      setTimeout(() => {
+        document.getElementById("status").textContent = "播放完成";
+      }, 10000);
+    };
+    document.getElementById("play").click();
+  </script>
+</body>
+</html>

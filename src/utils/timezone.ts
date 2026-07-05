@@ -60,6 +60,22 @@ export function todayIsoDate() {
   return `${t.year}-${String(t.month).padStart(2, "0")}-${String(t.day).padStart(2, "0")}`;
 }
 
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
+
+/** 东八区 wall-clock 时间减去分钟数 */
+export function subtractBeijingMinutes(beijingDate: string, hhmm: string, mins: number) {
+  const [y, mo, d] = beijingDate.split("-").map(Number);
+  const [h, m] = hhmm.split(":").map(Number);
+  const utcMs = Date.UTC(y, mo - 1, d, h - 8, m) - mins * 60_000;
+  const bj = new Date(utcMs + 8 * 3600_000);
+  return {
+    date: `${bj.getUTCFullYear()}-${pad2(bj.getUTCMonth() + 1)}-${pad2(bj.getUTCDate())}`,
+    hm: `${pad2(bj.getUTCHours())}:${pad2(bj.getUTCMinutes())}`,
+  };
+}
+
 export function formatScheduleDate(iso: string) {
   const today = todayIsoDate();
   if (iso === today) return "今天";

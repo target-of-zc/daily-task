@@ -33,6 +33,7 @@ Thumbs.db
 .env
 .env.*
 *.log
+email.json
 
 # Tauri
 src-tauri/gen/

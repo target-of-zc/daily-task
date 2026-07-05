@@ -47,3 +47,48 @@ fn prune_old_backups(dir: &Path) {
         }
     }
 }
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupEntry {
+    pub name: String,
+    pub path: String,
+    pub modified: String,
+}
+
+pub fn list_backups() -> Vec<BackupEntry> {
+    let dir = backup_dir();
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut items: Vec<BackupEntry> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("tasks_") && n.ends_with(".json"))
+        })
+        .filter_map(|p| {
+            let name = p.file_name()?.to_str()?.to_string();
+            let modified = p
+                .metadata()
+                .ok()?
+                .modified()
+                .ok()
+                .map(|t| {
+                    chrono::DateTime::<chrono::Local>::from(t)
+                        .format("%Y-%m-%d %H:%M")
+                        .to_string()
+                })
+                .unwrap_or_default();
+            Some(BackupEntry {
+                path: p.to_string_lossy().into_owned(),
+                name,
+                modified,
+            })
+        })
+        .collect();
+    items.sort_by(|a, b| b.name.cmp(&a.name));
+    items
+}
